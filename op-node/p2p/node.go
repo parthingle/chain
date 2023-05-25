@@ -5,12 +5,15 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"time"
 
 	"github.com/ethereum-optimism/optimism/op-node/eth"
 	"github.com/ethereum-optimism/optimism/op-node/metrics"
 	"github.com/ethereum-optimism/optimism/op-node/p2p/gating"
+	"github.com/ethereum-optimism/optimism/op-node/p2p/monitor"
 	"github.com/ethereum-optimism/optimism/op-node/p2p/store"
 	"github.com/ethereum-optimism/optimism/op-node/rollup"
+	"github.com/ethereum-optimism/optimism/op-service/clock"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/p2p/discover"
 	"github.com/ethereum/go-ethereum/p2p/enode"
@@ -25,10 +28,11 @@ import (
 
 // NodeP2P is a p2p node, which can be used to gossip messages.
 type NodeP2P struct {
-	host    host.Host                      // p2p host (optional, may be nil)
-	gater   gating.BlockingConnectionGater // p2p gater, to ban/unban peers with, may be nil even with p2p enabled
-	scorer  Scorer                         // writes score-updates to the peerstore and keeps metrics of score changes
-	connMgr connmgr.ConnManager            // p2p conn manager, to keep a reliable number of peers, may be nil even with p2p enabled
+	host        host.Host                      // p2p host (optional, may be nil)
+	gater       gating.BlockingConnectionGater // p2p gater, to ban/unban peers with, may be nil even with p2p enabled
+	scorer      Scorer                         // writes score-updates to the peerstore and keeps metrics of score changes
+	connMgr     connmgr.ConnManager            // p2p conn manager, to keep a reliable number of peers, may be nil even with p2p enabled
+	peerMonitor *monitor.PeerMonitor
 	// the below components are all optional, and may be nil. They require the host to not be nil.
 	dv5Local *enode.LocalNode // p2p discovery identity
 	dv5Udp   *discover.UDPv5  // p2p discovery service
@@ -114,6 +118,8 @@ func (n *NodeP2P) init(resourcesCtx context.Context, rollupCfg *rollup.Config, l
 				n.scorer.OnDisconnect(conn.RemotePeer())
 			},
 		})
+		n.peerMonitor = monitor.NewPeerMonitor(resourcesCtx, log, clock.SystemClock, n.host.Network(), n.connMgr, eps, n, -100, 1*time.Hour)
+		n.peerMonitor.Start()
 		// notify of any new connections/streams/etc.
 		n.host.Network().Notify(NewNetworkNotifier(log, metrics))
 		// note: the IDDelta functionality was removed from libP2P, and no longer needs to be explicitly disabled.
@@ -186,6 +192,7 @@ func (n *NodeP2P) ConnectionManager() connmgr.ConnManager {
 
 func (n *NodeP2P) Close() error {
 	var result *multierror.Error
+	n.peerMonitor.Stop()
 	if n.dv5Udp != nil {
 		n.dv5Udp.Close()
 	}
